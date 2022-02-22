@@ -45,19 +45,29 @@ Pooling is the grouping together of resources (assets, equipment, personnel, eff
 
 Java中的线程池核心实现类是ThreadPoolExecutor，本章基于JDK 1.8的源码来分析Java线程池的核心设计与实现。我们首先来看一下ThreadPoolExecutor的UML类图，了解下ThreadPoolExecutor的继承关系。
 
-![图1 ThreadPoolExecutor UML类图](https://p1.meituan.net/travelcube/912883e51327e0c7a9d753d11896326511272.png)
+<img src="https://p1.meituan.net/travelcube/912883e51327e0c7a9d753d11896326511272.png" title="" alt="图1 ThreadPoolExecutor UML类图" data-align="center">
 
-图1 ThreadPoolExecutor UML类图
+                                        图1 ThreadPoolExecutor UML类图
 
-ThreadPoolExecutor实现的顶层接口是Executor，顶层接口Executor提供了一种思想：将任务提交和任务执行进行解耦。用户无需关注如何创建线程，如何调度线程来执行任务，用户只需提供Runnable对象，将任务的运行逻辑提交到执行器(Executor)中，由Executor框架完成线程的调配和任务的执行部分。ExecutorService接口增加了一些能力：（1）扩充执行任务的能力，补充可以为一个或一批异步任务生成Future的方法；（2）提供了管控线程池的方法，比如停止线程池的运行。AbstractExecutorService则是上层的抽象类，将执行任务的流程串联了起来，保证下层的实现只需关注一个执行任务的方法即可。最下层的实现类ThreadPoolExecutor实现最复杂的运行部分，ThreadPoolExecutor将会一方面维护自身的生命周期，另一方面同时管理线程和任务，使两者良好的结合从而执行并行任务。
+ThreadPoolExecutor实现的顶层接口是Executor，顶层接口Executor提供了一种思想：将任务提交和任务执行进行解耦。用户无需关注如何创建线程，如何调度线程来执行任务，用户只需提供Runnable对象，将任务的运行逻辑提交到执行器(Executor)中，由Executor框架完成线程的调配和任务的执行部分。ExecutorService接口增加了一些能力：
+
+（1）扩充执行任务的能力，补充可以为一个或一批异步任务生成Future的方法；
+
+（2）提供了管控线程池的方法，比如停止线程池的运行。AbstractExecutorService则是上层的抽象类，将执行任务的流程串联了起来，保证下层的实现只需关注一个执行任务的方法即可。最下层的实现类ThreadPoolExecutor实现最复杂的运行部分，ThreadPoolExecutor将会一方面维护自身的生命周期，另一方面同时管理线程和任务，使两者良好的结合从而执行并行任务。
 
 ThreadPoolExecutor是如何运行，如何同时维护线程和执行任务的呢？其运行机制如下图所示：
 
 ![图2 ThreadPoolExecutor运行流程](https://p0.meituan.net/travelcube/77441586f6b312a54264e3fcf5eebe2663494.png)
 
-图2 ThreadPoolExecutor运行流程
+                                        图2 ThreadPoolExecutor运行流程
 
-线程池在内部实际上构建了一个生产者消费者模型，将线程和任务两者解耦，并不直接关联，从而良好的缓冲任务，复用线程。线程池的运行主要分成两部分：任务管理、线程管理。任务管理部分充当生产者的角色，当任务提交后，线程池会判断该任务后续的流转：（1）直接申请线程执行该任务；（2）缓冲到队列中等待线程执行；（3）拒绝该任务。线程管理部分是消费者，它们被统一维护在线程池内，根据任务请求进行线程的分配，当线程执行完任务后则会继续获取新的任务去执行，最终当线程获取不到任务的时候，线程就会被回收。
+线程池在内部实际上构建了一个生产者消费者模型，将线程和任务两者解耦，并不直接关联，从而良好的缓冲任务，复用线程。线程池的运行主要分成两部分：任务管理、线程管理。任务管理部分充当生产者的角色，当任务提交后，线程池会判断该任务后续的流转：
+
+（1）直接申请线程执行该任务；
+
+（2）缓冲到队列中等待线程执行；
+
+（3）拒绝该任务。线程管理部分是消费者，它们被统一维护在线程池内，根据任务请求进行线程的分配，当线程执行完任务后则会继续获取新的任务去执行，最终当线程获取不到任务的时候，线程就会被回收。
 
 接下来，我们会按照以下三个部分去详细讲解线程池运行机制：
 
@@ -67,17 +77,17 @@ ThreadPoolExecutor是如何运行，如何同时维护线程和执行任务的�
 
 ### 2.2 生命周期管理
 
-线程池运行的状态，并不是用户显式设置的，而是伴随着线程池的运行，由内部来维护。线程池内部使用一个变量维护两个值：运行状态(runState)和线程数量 (workerCount)。在具体实现中，线程池将运行状态(runState)、线程数量 (workerCount)两个关键参数的维护放在了一起，如下代码所示：
+线程池运行的状态，并不是用户显式设置的，而是伴随着线程池的运行，由内部来维护。线程池内部使用一个变量维护两个值：<mark>运行状态(runState)</mark>和<mark>线程数量 (workerCount)</mark>。在具体实现中，线程池将运行状态(runState)、线程数量 (workerCount)两个关键参数的维护放在了一起，如下代码所示：
 
-```Java
+```java
 private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
 ```
 
-`ctl`这个AtomicInteger类型，是对线程池的运行状态和线程池中有效线程的数量进行控制的一个字段， 它同时包含两部分的信息：线程池的运行状态 (runState) 和线程池内有效线程的数量 (workerCount)，高3位保存runState，低29位保存workerCount，两个变量之间互不干扰。用一个变量去存储两个值，可避免在做相关决策时，出现不一致的情况，不必为了维护两者的一致，而占用锁资源。通过阅读线程池源代码也可以发现，经常出现要同时判断线程池运行状态和线程数量的情况。线程池也提供了若干方法去供用户获得线程池当前的运行状态、线程个数。这里都使用的是位运算的方式，相比于基本运算，速度也会快很多。
+`ctl`这个AtomicInteger类型，是对线程池的运行状态和线程池中有效线程的数量进行控制的一个字段， 它同时包含两部分的信息：线程池的运行状态 (runState) 和线程池内有效线程的数量 (workerCount)，<mark>高3位保存runState，低29位保存workerCount</mark>，两个变量之间互不干扰。用一个变量去存储两个值，可避免在做相关决策时，出现不一致的情况，**不必为了维护两者的一致**，而占用锁资源。通过阅读线程池源代码也可以发现，经常出现要同时判断线程池运行状态和线程数量的情况。线程池也提供了若干方法去供用户获得线程池当前的运行状态、线程个数。这里都使用的是位运算的方式，相比于基本运算，速度也会快很多。
 
 关于内部封装的获取生命周期状态、获取线程池线程数量的计算方法如以下代码所示：
 
-```Java
+```java
 private static int runStateOf(int c)     { return c & ~CAPACITY; } //计算当前运行状态
 private static int workerCountOf(int c)  { return c & CAPACITY; }  //计算当前线程数量
 private static int ctlOf(int rs, int wc) { return rs | wc; }   //通过状态和线程数生成ctl
@@ -91,7 +101,7 @@ ThreadPoolExecutor的运行状态有5种，分别为：
 
 ![图3 线程池生命周期](https://p0.meituan.net/travelcube/582d1606d57ff99aa0e5f8fc59c7819329028.png)
 
-图3 线程池生命周期
+                                                图3 线程池生命周期
 
 ### 2.3 任务执行机制
 
@@ -102,16 +112,16 @@ ThreadPoolExecutor的运行状态有5种，分别为：
 首先，所有任务的调度都是由execute方法完成的，这部分完成的工作是：检查现在线程池的运行状态、运行线程数、运行策略，决定接下来执行的流程，是直接申请线程执行，或是缓冲到队列中执行，亦或是直接拒绝该任务。其执行过程如下：
 
 1. 首先检测线程池运行状态，如果不是RUNNING，则直接拒绝，线程池要保证在RUNNING的状态下执行任务。
-2. 如果workerCount < corePoolSize，则创建并启动一个线程来执行新提交的任务。
-3. 如果workerCount >= corePoolSize，且线程池内的阻塞队列未满，则将任务添加到该阻塞队列中。
-4. 如果workerCount >= corePoolSize && workerCount < maximumPoolSize，且线程池内的阻塞队列已满，则创建并启动一个线程来执行新提交的任务。
+2. 如果`workerCount < corePoolSize`，则创建并启动一个线程来执行新提交的任务。
+3. 如果`workerCount >= corePoolSize`，且线程池内的阻塞队列未满，则将任务添加到该阻塞队列中。
+4. 如果`workerCount >= corePoolSize && workerCount < maximumPoolSize`，且线程池内的阻塞队列已满，则创建并启动一个线程来执行新提交的任务。
 5. 如果workerCount >= maximumPoolSize，并且线程池内的阻塞队列已满, 则根据拒绝策略来处理该任务, 默认的处理方式是直接抛异常。
 
 其执行流程如下图所示：
 
-![图4 任务调度流程](https://p0.meituan.net/travelcube/31bad766983e212431077ca8da92762050214.png)
+<img src="https://p0.meituan.net/travelcube/31bad766983e212431077ca8da92762050214.png" title="" alt="图4 任务调度流程" data-align="center">
 
-图4 任务调度流程
+                                                图4 任务调度流程
 
 **2.3.2 任务缓冲**
 
@@ -121,9 +131,9 @@ ThreadPoolExecutor的运行状态有5种，分别为：
 
 下图中展示了线程1往阻塞队列中添加元素，而线程2从阻塞队列中移除元素：
 
-![图5 阻塞队列](https://p1.meituan.net/travelcube/f4d89c87acf102b45be8ccf3ed83352a9497.png)
+<img src="https://p1.meituan.net/travelcube/f4d89c87acf102b45be8ccf3ed83352a9497.png" title="" alt="图5 阻塞队列" data-align="center">
 
-图5 阻塞队列
+                                                    图5 阻塞队列
 
 使用不同的队列可以实现不一样的任务存取策略。在这里，我们可以再介绍下阻塞队列的成员：
 
@@ -137,7 +147,7 @@ ThreadPoolExecutor的运行状态有5种，分别为：
 
 ![图6 获取任务流程图](https://p0.meituan.net/travelcube/49d8041f8480aba5ef59079fcc7143b996706.png)
 
-图6 获取任务流程图
+                                                图6 获取任务流程图
 
 getTask这部分进行了多次判断，为的是控制线程的数量，使其符合线程池的状态。如果线程池现在不应该持有那么多线程，则会返回null值。工作线程Worker会不断接收新任务去执行，而当工作线程Worker接收不到任务的时候，就会开始被回收。
 
@@ -147,7 +157,7 @@ getTask这部分进行了多次判断，为的是控制线程的数量，使其�
 
 拒绝策略是一个接口，其设计如下：
 
-```Java
+```java
 public interface RejectedExecutionHandler {
     void rejectedExecution(Runnable r, ThreadPoolExecutor executor);
 }
@@ -163,7 +173,7 @@ public interface RejectedExecutionHandler {
 
 线程池为了掌握线程的状态并维护线程的生命周期，设计了线程池内的工作线程Worker。我们来看一下它的部分代码：
 
-```Java
+```java
 private final class Worker extends AbstractQueuedSynchronizer implements Runnable{
     final Thread thread;//Worker持有的线程
     Runnable firstTask;//初始化的任务，可以为null
@@ -176,19 +186,25 @@ Worker执行任务的模型如下图所示：
 
 ![图7 Worker执行任务](https://p0.meituan.net/travelcube/03268b9dc49bd30bb63064421bb036bf90315.png)
 
-图7 Worker执行任务
+                                            图7 Worker执行任务
 
 线程池需要管理线程的生命周期，需要在线程长时间不运行的时候进行回收。线程池使用一张Hash表去持有线程的引用，这样可以通过添加引用、移除引用这样的操作来控制线程的生命周期。这个时候重要的就是如何判断线程是否在运行。
 
 ​Worker是通过继承AQS，使用AQS来实现独占锁这个功能。没有使用可重入锁ReentrantLock，而是使用AQS，为的就是实现不可重入的特性去反应线程现在的执行状态。
 
-1.lock方法一旦获取了独占锁，表示当前线程正在执行任务中。 2.如果正在执行任务，则不应该中断线程。 3.如果该线程现在不是独占锁的状态，也就是空闲的状态，说明它没有在处理任务，这时可以对该线程进行中断。 4.线程池在执行shutdown方法或tryTerminate方法时会调用interruptIdleWorkers方法来中断空闲的线程，interruptIdleWorkers方法会使用tryLock方法来判断线程池中的线程是否是空闲状态；如果线程是空闲状态则可以安全回收。
+1.lock方法一旦获取了独占锁，表示当前线程正在执行任务中。 
+
+2.如果正在执行任务，则不应该中断线程。
+
+3.如果该线程现在不是独占锁的状态，也就是空闲的状态，说明它没有在处理任务，这时可以对该线程进行中断。 
+
+4.线程池在执行shutdown方法或tryTerminate方法时会调用interruptIdleWorkers方法来中断空闲的线程，interruptIdleWorkers方法会使用tryLock方法来判断线程池中的线程是否是空闲状态；如果线程是空闲状态则可以安全回收。
 
 在线程回收过程中就使用到了这种特性，回收过程如下图所示：
 
 ![图8 线程池回收过程](https://p1.meituan.net/travelcube/9d8dc9cebe59122127460f81a98894bb34085.png)
 
-图8 线程池回收过程
+                                                图8 线程池回收过程
 
 **2.4.2 Worker线程增加**
 
@@ -196,13 +212,13 @@ Worker执行任务的模型如下图所示：
 
 ![图9 申请线程执行流程图](https://p0.meituan.net/travelcube/49527b1bb385f0f43529e57b614f59ae145454.png)
 
-图9 申请线程执行流程图
+                                            图9 申请线程执行流程图
 
 **2.4.3 Worker线程回收**
 
 线程池中线程的销毁依赖JVM自动的回收，线程池做的工作是根据当前线程池的状态维护一定数量的线程引用，防止这部分线程被JVM回收，当线程池决定哪些线程需要回收时，只需要将其引用消除即可。Worker被创建出来后，就会不断地进行轮询，然后获取任务去执行，核心线程可以无限等待获取任务，非核心线程要限时获取任务。当Worker无法获取到任务，也就是获取的任务为空时，循环会结束，Worker会主动消除自身在线程池内的引用。
 
-```Java
+```java
 try {
   while (task != null || (task = getTask()) != null) {
     //执行任务
@@ -216,7 +232,7 @@ try {
 
 ![图10 线程销毁流程](https://p0.meituan.net/travelcube/90ea093549782945f2c968403fdc39d415386.png)
 
-图10 线程销毁流程
+                                               图10 线程销毁流程
 
 事实上，在这个方法中，将线程引用移出线程池就已经结束了线程销毁的部分。但由于引起线程销毁的可能性有很多，线程池还要判断是什么引发了这次销毁，是否要改变线程池的现阶段状态，是否要根据新状态，重新分配线程。
 
@@ -228,9 +244,9 @@ try {
 
 执行流程如下图所示：
 
-![图11 执行任务流程](https://p0.meituan.net/travelcube/879edb4f06043d76cea27a3ff358cb1d45243.png)
+<img src="https://p0.meituan.net/travelcube/879edb4f06043d76cea27a3ff358cb1d45243.png" title="" alt="图11 执行任务流程" data-align="center">
 
-图11 执行任务流程
+                                                图11 执行任务流程
 
 ## 三、线程池在业务中的实践
 
@@ -244,9 +260,9 @@ try {
 
 **分析**：从用户体验角度看，这个结果响应的越快越好，如果一个页面半天都刷不出，用户可能就放弃查看这个商品了。而面向用户的功能聚合通常非常复杂，伴随着调用与调用之间的级联、多级级联等情况，业务开发同学往往会选择使用线程池这种简单的方式，将调用封装成任务并行的执行，缩短总体响应时间。另外，使用线程池也是有考量的，这种场景最重要的就是获取最大的响应速度去满足用户，所以应该不设置队列去缓冲并发任务，调高corePoolSize和maxPoolSize去尽可能创造多的线程快速执行任务。
 
-![图12 并行执行任务提升任务响应速度](https://p0.meituan.net/travelcube/e9a363c8577f211577e4962e9110cb0226733.png)
+<img src="https://p0.meituan.net/travelcube/e9a363c8577f211577e4962e9110cb0226733.png" title="" alt="图12 并行执行任务提升任务响应速度" data-align="center">
 
-图12 并行执行任务提升任务响应速度
+                                     图12 并行执行任务提升任务响应速度
 
 **场景2：快速处理批量任务**
 
@@ -254,9 +270,9 @@ try {
 
 **分析**：这种场景需要执行大量的任务，我们也会希望任务执行的越快越好。这种情况下，也应该使用多线程策略，并行计算。但与响应速度优先的场景区别在于，这类场景任务量巨大，并不需要瞬时的完成，而是关注如何使用有限的资源，尽可能在单位时间内处理更多的任务，也就是吞吐量优先的问题。所以应该设置队列去缓冲并发任务，调整合适的corePoolSize去设置处理任务的线程数。在这里，设置的线程数过多可能还会引发线程上下文切换频繁的问题，也会降低处理任务的速度，降低吞吐量。
 
-![图13 并行执行任务提升批量任务执行速度](https://p1.meituan.net/travelcube/1a1746f33bfdcb03da074d8539ebb2f367563.png)
+<img src="https://p1.meituan.net/travelcube/1a1746f33bfdcb03da074d8539ebb2f367563.png" title="" alt="图13 并行执行任务提升批量任务执行速度" data-align="center">
 
-图13 并行执行任务提升批量任务执行速度
+                            图13 并行执行任务提升批量任务执行速度
 
 ### 3.2 实际问题及方案思考
 
@@ -272,7 +288,7 @@ try {
 
 ![图14 线程数核心设置过小引发RejectExecutionException](https://p0.meituan.net/travelcube/1df932840b31f41931bb69e16be2932844240.png)
 
-图14 线程数核心设置过小引发RejectExecutionException
+                    图14 线程数核心设置过小引发RejectExecutionException
 
 **Case2**：2018年XX业务服务不可用S2级故障
 
@@ -282,7 +298,7 @@ try {
 
 ![图15 线程池队列长度设置过长、corePoolSize设置过小导致任务执行速度低](https://p1.meituan.net/travelcube/668e3c90f4b918bfcead2f4280091e9757284.png)
 
-图15 线程池队列长度设置过长、corePoolSize设置过小导致任务执行速度低
+               图15 线程池队列长度设置过长、corePoolSize设置过小导致任务执行速度低            
 
 业务中要使用线程池，而使用不当又会导致故障，那么我们怎样才能更好地使用线程池呢？针对这个问题，我们下面延展几个方向：
 
@@ -310,7 +326,7 @@ try {
 
 ![图16 动态修改线程池参数新旧流程对比](https://p0.meituan.net/travelcube/c6caa5be64f39758ada0593b995d65fd25982.png)
 
-图16 动态修改线程池参数新旧流程对比
+                               图16 动态修改线程池参数新旧流程对比
 
 基于以上三个方向对比，我们可以看出参数动态化方向简单有效。
 
@@ -326,7 +342,7 @@ try {
 
 ![图17 动态化线程池整体设计](https://p1.meituan.net/travelcube/4d5c410ad23782350cc9f980787151fd54144.png)
 
-图17 动态化线程池整体设计
+                                               图17 动态化线程池整体设计
 
 **3.3.2 功能架构**
 
@@ -336,7 +352,7 @@ try {
 
 ![图18 动态化线程池功能架构](https://p0.meituan.net/travelcube/6c0091e92e90f50f89fd83f3b9eb5472135718.png)
 
-图18 动态化线程池功能架构
+                                            图18 动态化线程池功能架构
 
 **参数动态化**
 
@@ -350,13 +366,13 @@ JDK允许线程池使用方通过ThreadPoolExecutor的实例来动态设置线�
 
 ![图20 setCorePoolSize方法执行流程](https://p0.meituan.net/travelcube/9379fe1666818237f842138812bf63bd85645.png)
 
-图20 setCorePoolSize方法执行流程
+                                图20 setCorePoolSize方法执行流程
 
 线程池内部会处理好当前状态做到平滑修改，其他几个方法限于篇幅，这里不一一介绍。重点是基于这几个public方法，我们只需要维护ThreadPoolExecutor的实例，并且在需要修改的时候拿到实例修改其参数即可。基于以上的思路，我们实现了线程池参数的动态化、线程池参数在管理平台可配置可修改，其效果图如下图所示：
 
 ![图21 可动态修改线程池参数](https://p0.meituan.net/travelcube/414ba7f3abd11e5f805c58635ae10988166121.png)
 
-图21 可动态修改线程池参数
+                                    图21 可动态修改线程池参数
 
 用户可以在管理平台上通过线程池的名字找到指定的线程池，然后对其参数进行修改，保存后会实时生效。目前支持的动态参数包括核心数、最大值、队列长度等。除此之外，在界面中，我们还能看到用户可以配置是否开启告警、队列等待任务告警阈值、活跃度告警等等。关于监控和告警，我们下面一节会对齐进行介绍。
 
@@ -370,7 +386,7 @@ JDK允许线程池使用方通过ThreadPoolExecutor的实例来动态设置线�
 
 ![图22 大象告警通知](https://p0.meituan.net/travelcube/04e73f7186a91d99181e1b5615ce9e4a318600.png)
 
-图22 大象告警通知
+                                               图22 大象告警通知    
 
 #### 2. 任务级精细化监控
 
@@ -386,13 +402,13 @@ JDK允许线程池使用方通过ThreadPoolExecutor的实例来动态设置线�
 
 ![图24 线程池实时运行情况](https://p0.meituan.net/travelcube/aba8d9c09e6f054c7061ddd720a04a26147951.png)
 
-图24 线程池实时运行情况
+                                        图24 线程池实时运行情况
 
 动态化线程池基于这几个接口封装了运行时状态实时查看的功能，用户基于这个功能可以了解线程池的实时状态，比如当前有多少个工作线程，执行了多少个任务，队列中等待的任务数等等。效果如下图所示：
 
 ![图25 线程池实时运行情况](https://p1.meituan.net/travelcube/38d5fbeaebd4998f3a30d44bd20b996f113233.png)
 
-图25 线程池实时运行情况
+                                        图25 线程池实时运行情况
 
 ### 3.4 实践总结
 
